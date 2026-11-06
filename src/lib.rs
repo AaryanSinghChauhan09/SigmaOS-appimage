@@ -1,76 +1,60 @@
 // SPDX-License-Identifier: Apache-2.0
 //! SigmaOS-appimage — SigmaOS appimage component inspired by Linux Mint / Omarchy / Arch Linux.
 //!
-//! Ordered execution plan: validated steps executed fail-fast, first error aborts.
+//! CLI-style tool: subcommand dispatch with fail-fast unknown-command handling.
 //! Principles: single responsibility, fail-fast, defensive programming,
 //! component isolation, stable API, deterministic tests.
 
 use std::fmt;
-/// Errors for `PlanError` operations. Fail-fast: invalid input is rejected.
+/// Errors for `ToolError` operations. Fail-fast: invalid input is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlanError {
-    /// Plan step description must not be empty
-    EmptyStep,
-    /// Cannot run an empty plan
-    EmptyPlan,
-    /// A plan step failed during execution
-    StepFailed(String),
+pub enum ToolError {
+    /// Tool name must not be empty
+    EmptyName,
+    /// Unrecognized subcommand
+    UnknownCommand(String),
+    /// Subcommand requires arguments
+    MissingArgs(String),
 }
 
-impl fmt::Display for PlanError {
+impl fmt::Display for ToolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyStep => write!(f, "plan step description must not be empty"),
-            Self::EmptyPlan => write!(f, "cannot run an empty plan"),
-            Self::StepFailed(x) => write!(f, "a plan step failed during execution: {x}"),
+            Self::EmptyName => write!(f, "tool name must not be empty"),
+            Self::UnknownCommand(x) => write!(f, "unrecognized subcommand: {x}"),
+            Self::MissingArgs(x) => write!(f, "subcommand requires arguments: {x}"),
         }
     }
 }
 
-impl std::error::Error for PlanError {}
+impl std::error::Error for ToolError {}
 
-/// An ordered list of steps forming an executable plan.
-#[derive(Debug, Default)]
-pub struct Plan {
-    steps: Vec<String>,
+/// A command-line tool with a small fixed subcommand set.
+#[derive(Debug)]
+pub struct Tool {
+    name: String,
 }
 
-impl Plan {
-    /// Empty plan.
-    pub fn new() -> Self { Self::default() }
-
-    /// Append a step; fails on empty description.
-    pub fn add_step(&mut self, step: impl Into<String>) -> Result<(), PlanError> {
-        let step = step.into();
-        if step.trim().is_empty() { return Err(PlanError::EmptyStep); }
-        self.steps.push(step);
-        Ok(())
+impl Tool {
+    /// Create the tool; fails fast on empty name.
+    pub fn new(name: impl Into<String>) -> Result<Self, ToolError> {
+        let name = name.into();
+        if name.trim().is_empty() { return Err(ToolError::EmptyName); }
+        Ok(Self { name })
     }
 
-    /// Number of steps.
-    pub fn len(&self) -> usize { self.steps.len() }
+    /// Tool name.
+    pub fn name(&self) -> &str { &self.name }
 
-    /// Whether the plan has no steps.
-    pub fn is_empty(&self) -> bool { self.steps.is_empty() }
-
-    /// Validate the plan is non-empty.
-    pub fn validate(&self) -> Result<(), PlanError> {
-        if self.steps.is_empty() { Err(PlanError::EmptyPlan) } else { Ok(()) }
-    }
-
-    /// Execute steps in order via `exec`; first failure aborts and is
-    /// wrapped in `StepFailed`. Returns the list of completed step names.
-    pub fn run<F>(&self, mut exec: F) -> Result<Vec<String>, PlanError>
-    where
-        F: FnMut(&str) -> Result<(), String>,
-    {
-        self.validate()?;
-        let mut done = Vec::with_capacity(self.steps.len());
-        for step in &self.steps {
-            exec(step).map_err(|e| PlanError::StepFailed(format!("{step}: {e}")))?;
-            done.push(step.clone());
+    /// Dispatch a subcommand. Supported: `status`, `version`, `help`.
+    /// Commands needing args that get none fail fast.
+    pub fn run(&self, args: &[&str]) -> Result<String, ToolError> {
+        match args.first().copied().unwrap_or("help") {
+            "status" => Ok(format!("{}: ready", self.name)),
+            "version" => Ok(format!("{}: 0.1.0", self.name)),
+            "help" => Ok(format!("{}: commands: status, version, help", self.name)),
+            other => Err(ToolError::UnknownCommand(other.to_string())),
         }
-        Ok(done)
     }
 }
 
@@ -78,35 +62,28 @@ impl Plan {
 mod tests {
     use super::*;
 
-    fn plan() -> Plan {
-        let mut p = Plan::new();
-        p.add_step("partition").unwrap();
-        p.add_step("install base").unwrap();
-        p
+    #[test]
+    fn status_and_version() {
+        let t = Tool::new("demo").unwrap();
+        assert_eq!(t.run(&["status"]).unwrap(), "demo: ready");
+        assert!(t.run(&["version"]).unwrap().contains("0.1.0"));
     }
 
     #[test]
-    fn run_executes_in_order() {
-        let p = plan();
-        let done = p.run(|_| Ok(())).unwrap();
-        assert_eq!(done, vec!["partition".to_string(), "install base".to_string()]);
+    fn no_args_shows_help() {
+        let t = Tool::new("demo").unwrap();
+        assert!(t.run(&[]).unwrap().contains("commands"));
     }
 
     #[test]
-    fn failure_aborts_plan() {
-        let p = plan();
-        let res = p.run(|s| if s == "install base" { Err("boom".into()) } else { Ok(()) });
-        assert!(matches!(res, Err(PlanError::StepFailed(_))));
+    fn unknown_command_fails() {
+        let t = Tool::new("demo").unwrap();
+        assert!(matches!(t.run(&["bogus"]), Err(ToolError::UnknownCommand(_))));
     }
 
     #[test]
-    fn empty_step_rejected() {
-        assert!(matches!(Plan::new().add_step(" "), Err(PlanError::EmptyStep)));
-    }
-
-    #[test]
-    fn empty_plan_run_fails() {
-        assert_eq!(Plan::new().run(|_| Ok(())), Err(PlanError::EmptyPlan));
+    fn empty_name_fails() {
+        assert!(Tool::new(" ").is_err());
     }
 
 }
